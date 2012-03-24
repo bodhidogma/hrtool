@@ -1,0 +1,150 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+
+# import modules used here -- sys is a very standard one
+import sys, os, os.path
+import re, getopt
+#import sqlite3 as sqlite
+#import subprocess, time
+#import signal, datetime
+#import logging
+
+# curl -O -sv -d @body https://www.silicondust.com/hdhomerun/lineupui?Cmd=IdentifyPrograms2
+
+xml_req_header = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n\
+<LineupUIRequest>\n\t<Vendor>{0}</Vendor>\n\t<Application>{1}</Application>\n\
+\t<Command>IdentifyPrograms2</Command>\n\t<UserID>{2}/UserID>\n\t[<DeviceID>{3}</DeviceID>]\n\
+\t<Location>{4}</Location>'
+
+xml_req_prog = '<Program>\n\t<Modulation>{0}</Modulation>\n\t<Frequency>{1}</Frequency>\n\
+\t<TransportStreamID>{2}</TransportStreamID>\n\t<ProgramNumber>{3}</ProgramNumber>\n\
+\t<SeenTimestamp>{4}</SeenTimestamp>\n</Program>'
+
+xml_req_footer = '</LineupUIRequest>\n'
+
+def scan_channel( ch_entry ):
+	chan = {}
+	chan['1'] = ch_entry.pop(0)			# scanning
+	chan['2'] = ch_entry.pop(0)			# lock
+	chan['prog'] = []
+
+	if chan['2'].startswith('LOCK: none') == False and len(ch_entry):
+		chan['3'] = ch_entry.pop(0)		# tsid
+
+		for line in ch_entry:
+			if line.endswith('(encrypted)\n') == False:
+				chan['prog'].append( line )
+
+		if len(chan['prog']) == 0:
+			return {}
+	else:
+		return {}
+
+	entry = {}
+
+#	print chan['1']
+	m = re.match(r"\w+: (\d+) .+ (\S+):(\d+)",chan['1'])
+#	print m.groups()
+	entry['freq'] = m.group(1)
+	entry['src'] = m.group(2)
+	entry['chan'] = m.group(3)
+
+#	print chan['2']
+	m = re.match(r"\w+: (\w+\d+) ", chan['2'])
+#	print m.groups()
+	entry['lock'] = m.group(1)
+
+#	print chan['3']
+	m = re.match(r"TSID: (0x\S+)", chan['3'])
+#	print m.groups()
+	entry['tsid'] = m.group(1)
+
+	entry['prog'] = {}
+#	print chan['prog']
+	for ch_prog in chan['prog']:
+		m = re.match(r"\w+ (\d+): (.+)", ch_prog)
+#		print m.groups()
+		entry['prog'][ m.group(1) ] = m.group(2)
+
+#	print ">", entry
+
+	return entry
+
+def scan_file(f,x):
+	chan = []
+	e = {}
+	ch_list = []
+
+	for line in f:
+		if line.startswith('SCANNING:') == False:
+			chan.append( line )
+		else:
+			if len(chan):
+				e = scan_channel( chan )
+
+				if len(e):
+					ch_list.append( e )
+#					print ".", e
+
+			chan = [ line ];
+
+	if len(chan):
+		e = scan_channel( chan )
+		if len(e):
+			ch_list.append( e )
+#			print ".", e
+
+	if len(ch_list):
+		print xml_req_header.format(
+				'SiliconDust USA', 'hrtool', 'hrtool-123', '10342652', 'US:94061')
+
+		for ch in ch_list:
+#			print ch
+#			print ch['freq']
+			for pr in ch['prog']:
+#				print '\t', pr
+				print xml_req_prog.format(
+						ch['lock'], ch['freq'], ch['tsid'], pr, '2012-03-19 09:12:00')
+
+		print xml_req_footer
+
+	return
+
+def usage():
+	print 'Usage: -f <file> -x'
+	return
+
+# Gather our code in a main() function
+def main():
+	try:
+		opts, args = getopt.getopt(sys.argv[1:], "hf:x", "help")
+	except getopt.GetoptError, err:
+		print str(err)
+		usage()
+		sys.exit(2)
+
+	o_file = None
+	o_xml = False
+
+	for o, a in opts:
+		if o in ("-h", "--help"):
+			usage()
+			sys.exit()
+		elif o == "-f":
+			o_file = a
+		elif o == "-x":
+			o_xml = True
+
+
+	if o_file == "-":
+		o_file = sys.stdin
+	else:
+		o_file = open(o_file, 'r')
+
+	scan_file( o_file, o_xml )
+
+# Standard boilerplate to call the main() function to begin
+# the program.
+if __name__ == '__main__':
+	main()
+
