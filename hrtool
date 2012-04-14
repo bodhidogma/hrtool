@@ -5,25 +5,19 @@
 import sys, os, os.path
 import re, getopt
 from xml.etree import ElementTree as ET
+#from xml.etree.ElementTree import Element, SubElement, Comment, tostring
+from xml.dom import minidom
 from operator import itemgetter, attrgetter
 import pickle
 #import sqlite3 as sqlite
 #import subprocess, time
 #import signal, datetime
 #import logging
+import datetime
 
 # curl -O -sv -d @body https://www.silicondust.com/hdhomerun/lineupui?Cmd=IdentifyPrograms2
 
-xml_req_header = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n\
-<LineupUIRequest>\n\t<Vendor>{0}</Vendor>\n\t<Application>{1}</Application>\n\
-\t<Command>IdentifyPrograms2</Command>\n\t<UserID>{2}/UserID>\n\t[<DeviceID>{3}</DeviceID>]\n\
-\t<Location>{4}</Location>'
-
-xml_req_prog = '<Program>\n\t<Modulation>{0}</Modulation>\n\t<Frequency>{1}</Frequency>\n\
-\t<TransportStreamID>{2}</TransportStreamID>\n\t<ProgramNumber>{3}</ProgramNumber>\n\
-\t<SeenTimestamp>{4}</SeenTimestamp>\n</Program>'
-
-xml_req_footer = '</LineupUIRequest>\n'
+time_now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 def scan_channel( ch_entry ):
 	chan = {}
@@ -109,20 +103,46 @@ def scan_file(f,x):
 #			print ".", e
 
 	if len(ch_list):
-#		print xml_req_header.format(
-#				'SiliconDust USA', 'hrtool', 'hrtool-123', '10342652', 'US:94061')
+	
+		root = ET.Element('LineupUIRequest')
+		child = ET.SubElement(root, 'Vendor')
+		child.text = 'SiliconDust USA'
+		child = ET.SubElement(root, 'Application')
+		child.text = 'hrtool'
+		child = ET.SubElement(root, 'Command')
+		child.text = 'IdentifyPrograms2'
+		child = ET.SubElement(root, 'UserID')
+		child.text = 'hrtool-123'
+		child.tail = '['
+		child = ET.SubElement(root, 'DeviceID')
+		child.text = '10342652'
+		child.tail = ']'
+		child = ET.SubElement(root, 'Location')
+		child.text = 'US:94061'
 
 #		print ch_list
-
 		for ch in ch_list:
-			print ch, ch_list[ch]
-#			print ch['freq']
-#			for pr in ch['prog']:
+#			print ch, ch_list[ch]
+			for pr in ch_list[ch]['prog']:
 #				print '\t', pr
-#				print xml_req_prog.format(
-#						ch['lock'], ch['freq'], ch['tsid'], pr, '2012-03-19 09:12:00')
+				program = ET.SubElement(root, 'Program')
+				child = ET.SubElement(program, 'Modulation')
+				child.text = ch_list[ch]['lock']
+				child = ET.SubElement(program, 'Frequency')
+				child.text = ch_list[ch]['freq']
+				child = ET.SubElement(program, 'TransportStreamID')
+				child.text = "%d" % ch
+				child = ET.SubElement(program, 'ProgramNumber')
+				child.text = pr 
+				child = ET.SubElement(program, 'SeenTimestamp')
+				child.text = time_now
 
-#		print xml_req_footer
+		tree = ET.ElementTree(root)
+		xml_string = ET.tostring(root,encoding="UTF-8")	# missing standalone="yes"
+#		print xml_string
+
+		xml = minidom.parseString(xml_string)
+		print xml.toprettyxml()
 
 		pickle.dump(ch_list, open('hrtool.dat','wb'))
 
@@ -135,7 +155,7 @@ def chan_map(f):
 #	for ch in ch_list: print ch
 
 	try:
-		tree = ET.parse(f)
+		tree = ElementTree.parse(f)
 	except Exception, inst:
 		print "error; %s: %s" % (f, inst)
 
