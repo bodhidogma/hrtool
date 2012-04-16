@@ -10,21 +10,29 @@ from xml.dom import minidom
 from operator import itemgetter, attrgetter
 import pickle
 #import sqlite3 as sqlite
-#import subprocess, time
-#import signal, datetime
+import subprocess
+#import time
+#import signal
 #import logging
-import datetime
+import datetime, time
+import urllib2
+
 
 # curl -O -sv -d @body https://www.silicondust.com/hdhomerun/lineupui?Cmd=IdentifyPrograms2
+LineupURI = 'https://www.silicondust.com/hdhomerun/lineupui?Cmd=IdentifyPrograms2'
 
-time_now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+DeviceData = {}
 
-def scan_channel( ch_entry ):
+##
+## extract valid programs from scanned TSID
+##
+def get_tsid_prog_entries( ch_entry ):
 	chan = {}
 	chan['1'] = ch_entry.pop(0)			# scanning
 	chan['2'] = ch_entry.pop(0)			# lock
 	chan['prog'] = []
 
+	# found a channel lock
 	if chan['2'].startswith('LOCK: none') == False and len(ch_entry):
 		chan['3'] = ch_entry.pop(0)		# tsid
 
@@ -39,28 +47,20 @@ def scan_channel( ch_entry ):
 
 	entry = {}
 
-#	print chan['1']
 	m = re.match(r"\w+: (\d+) .+ (\S+):(\d+)",chan['1'])
-#	print m.groups()
 	entry['freq'] = m.group(1)
 	entry['src'] = m.group(2)
 	entry['chan'] = m.group(3)
 
-#	print chan['2']
 	m = re.match(r"\w+: (\w+\d+) ", chan['2'])
-#	print m.groups()
 	entry['lock'] = m.group(1)
 
-#	print chan['3']
 	m = re.match(r"TSID: (0x\S+)", chan['3'])
-#	print m.groups()
 	entry['tsid'] = m.group(1)
 
 	entry['prog'] = {}
-#	print chan['prog']
 	for ch_prog in chan['prog']:
 		m = re.match(r"PROGRAM (\d+): (.+)", ch_prog)
-#		print m.groups()
 		entry['prog'][m.group(1)] = {}
 		if m.group(2) == "0":
 			vname = ['{0}.{1}'.format(entry['chan'],m.group(1)[-3:]),'' ]
@@ -68,99 +68,91 @@ def scan_channel( ch_entry ):
 			vname = m.group(2).split(' ',1)
 
 		entry['prog'][ m.group(1) ]['vname'] = vname
-#		entry['prog'][ m.group(1) ]['gname'] = ['','']
-
-#	print ">", entry
+		entry['prog'][ m.group(1) ]['gname'] = ['','']	# unknown guide num/name
 
 	return entry
 
-def scan_file(f,x):
+##
+## Read hdhomerun_config scanning report from file (f)
+## output XML format for submission to lineup identification
+##
+def extract_scanned_programs(fin):
+	global DeviceData
+
 	chan = []
 	e = {}
 	ch_list = {}
+
+	channels = 0
+	programs = 0
+
+	read_data()
+
+	if fin == "-":
+		f = sys.stdin
+		time_now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+	elif fin is not None:
+		f = open(fin, 'r')
+
+		fct = os.path.getctime(fin)
+		time_now = datetime.datetime.fromtimestamp(fct).strftime('%Y-%m-%d %H:%M:%S')
+	else:
+		print "Unknown file input"
+		return
 
 	for line in f:
 		if line.startswith('SCANNING:') == False:
 			chan.append( line )
 		else:
 			if len(chan):
-				e = scan_channel( chan )
+				e = get_tsid_prog_entries( chan )
 
 				if len(e):
 					ch_list[int(e['tsid'],0)] = e
 					del e['tsid']
-#					ch_list.append( e )
-#					print ".", e
+#					print ".",e
+					programs += len(e['prog'])
 
 			chan = [ line ];
 
 	if len(chan):
-		e = scan_channel( chan )
+		e = get_tsid_prog_entries( chan )
 		if len(e):
 			ch_list[e['tsid']] = e
 			del e['tsid']
-#			ch_list.append( e )
 #			print ".", e
 
 	if len(ch_list):
-	
-		root = ET.Element('LineupUIRequest')
-		child = ET.SubElement(root, 'Vendor')
-		child.text = 'SiliconDust USA'
-		child = ET.SubElement(root, 'Application')
-		child.text = 'hrtool'
-		child = ET.SubElement(root, 'Command')
-		child.text = 'IdentifyPrograms2'
-		child = ET.SubElement(root, 'UserID')
-		child.text = 'hrtool-123'
-		child.tail = '['
-		child = ET.SubElement(root, 'DeviceID')
-		child.text = '10342652'
-		child.tail = ']'
-		child = ET.SubElement(root, 'Location')
-		child.text = 'US:94061'
+		ch_data = {}
+		ch_data['chantime'] = time_now
+		ch_data['chanlist'] = ch_list
 
-#		print ch_list
-		for ch in ch_list:
-#			print ch, ch_list[ch]
-			for pr in ch_list[ch]['prog']:
-#				print '\t', pr
-				program = ET.SubElement(root, 'Program')
-				child = ET.SubElement(program, 'Modulation')
-				child.text = ch_list[ch]['lock']
-				child = ET.SubElement(program, 'Frequency')
-				child.text = ch_list[ch]['freq']
-				child = ET.SubElement(program, 'TransportStreamID')
-				child.text = "%d" % ch
-				child = ET.SubElement(program, 'ProgramNumber')
-				child.text = pr 
-				child = ET.SubElement(program, 'SeenTimestamp')
-				child.text = time_now
+		DeviceData['ch_data'] = ch_data
+		write_data()
 
-		tree = ET.ElementTree(root)
-		xml_string = ET.tostring(root,encoding="UTF-8")	# missing standalone="yes"
-#		print xml_string
-
-		xml = minidom.parseString(xml_string)
-		print xml.toprettyxml()
-
-		pickle.dump(ch_list, open('hrtool.dat','wb'))
+		channels = len(ch_list)
+		print "%s programs in %s channels found." % (programs, channels)
 
 	return
 
-def chan_map(f):
-	ch_list = pickle.load(open('hrtool.dat','rb'))
+##
+## Take XML channel lineup response and integrate results into channel mapping structure
+##
+def process_chan_lineup_resp(DeviceData,xml_resp):
+
+	ch_list= DeviceData['ch_data']['chanlist']
+
 	prg_list = {}
+	mapping_count = 0
 
 #	for ch in ch_list: print ch
 
 	try:
-		tree = ElementTree.parse(f)
+		tree = ET.fromstring(xml_resp)
 	except Exception, inst:
-		print "error; %s: %s" % (f, inst)
+		print "error; %s: %s" % ("xml_resp", inst)
 
-	print "TUNE,VNUM,VNAME,GNUM,GNAME"
-
+	# iterate through XML response data
 	for p in list(tree.iterfind('Program')):
 		mod = p.find('Modulation')
 		frq = p.find('Frequency')
@@ -170,19 +162,123 @@ def chan_map(f):
 		gnam = p.find('GuideName')
 
 		if gnum is not None:
-#			print "{0}-{1} = ({2}:{3})".format( sid.text, pn.text, gnum.text, gnam.text)
-#			ch_list[int(sid.text)]['prog'][pn.text]['gname'] = "{0} {1}".format( gnum.text, gnam.text )
 			ch_list[int(sid.text)]['prog'][pn.text]['gname'] = [gnum.text, gnam.text]
-		else:
-			ch_list[int(sid.text)]['prog'][pn.text]['gname'] = ['','']
+			mapping_count += 1
+#			print gnum.text, gnam.text
 
-#	for ch in ch_list: print ch, ch_list[ch]
+	if mapping_count >= 0:
+		DeviceData['ch_data']['chanlist'] = ch_list
+		print "%s programs mapped" % mapping_count
+
+	return
+
+##
+## Generate lineup request XML query string
+##
+def generate_chan_lineup_qeury( DeviceData ):
+
+	dev = DeviceData['dev']
+	ch_list = DeviceData['ch_data']['chanlist']
+	ch_time = DeviceData['ch_data']['chantime']
+
+	root = ET.Element('LineupUIRequest')
+	child = ET.SubElement(root, 'Vendor'); child.text = 'SiliconDust USA'
+	child = ET.SubElement(root, 'Application'); child.text = sys.argv[0]
+	child = ET.SubElement(root, 'Command'); child.text = 'IdentifyPrograms2'
+	child = ET.SubElement(root, 'UserID'); child.text = sys.argv[0]
+	child.tail = '['
+	child = ET.SubElement(root, 'DeviceID'); child.text = dev['id']
+	child.tail = ']'
+	child = ET.SubElement(root, 'Location'); child.text = dev['loc']
+
+	tree = ET.ElementTree(root)
+	xml_string = ET.tostring(root,encoding="UTF-8")	# missing standalone="yes"
+
+#		print ch_list
+	for ch in ch_list:
+#			print ch, ch_list[ch]
+		for pr in ch_list[ch]['prog']:
+#				print '\t', pr
+			program = ET.SubElement(root, 'Program')
+			child = ET.SubElement(program, 'Modulation')
+			child.text = ch_list[ch]['lock']
+			child = ET.SubElement(program, 'Frequency')
+			child.text = ch_list[ch]['freq']
+			child = ET.SubElement(program, 'TransportStreamID')
+			child.text = "%d" % ch
+			child = ET.SubElement(program, 'ProgramNumber')
+			child.text = pr 
+			child = ET.SubElement(program, 'SeenTimestamp')
+			child.text = ch_time
+
+#		break	# truncate complete results list
+
+	tree = ET.ElementTree(root)
+	xml_string = ET.tostring(root,encoding="UTF-8")	# missing standalone="yes"
+
+#	xml = minidom.parseString(xml_string)
+#	print xml.toprettyxml()
+
+#	print xml_string
+	return xml_string
+
+##
+## Request and process SiliconDust channel linup program mapping
+##
+def program_lineup_mapping():
+	global DeviceData
+	read_data()
+
+	# check for presence of device data
+	if 'dev' not in DeviceData:
+		hdhr_discover()
+
+	# check for previously detected programs
+	if 'ch_data' not in DeviceData or len(DeviceData['ch_data']['chanlist']) == 0:
+		print "Program list is missing, please process device channel scanning."
+		return
+
+	xml_query = generate_chan_lineup_qeury( DeviceData )
+	
+#	print xml_query
+
+	if os.path.isfile('xml_resp.xml'):
+		print "Reading XML response from file"
+		x = open('xml_resp.xml','rb'); xml_resp = x.read(); x.close()
+	else:
+		url_req = urllib2.Request(url=LineupURI,data=xml_query)
+		f = urllib2.urlopen(url_req)
+		xml_resp = f.read()
+#		x = open('xml_resp.xml','wb'); x.write(xml_resp); x.close()
+
+	if xml_resp != "":
+		process_chan_lineup_resp(DeviceData,xml_resp)
+		write_data()
+
+	return 
+
+##
+## Dump channel mapping table to CSV output
+##
+def dump_mapping_csv():
+	global DeviceData
+	read_data()
+
+	# check for previously detected programs
+	if 'ch_data' not in DeviceData or len(DeviceData['ch_data']['chanlist']) == 0:
+		print "Program list is missing, please process device channel scanning."
+		return
+
+	ch_list= DeviceData['ch_data']['chanlist']
+
+	print "TUNE,VNUM,VNAME,GNUM,GNAME"
 
 	for k,v in sorted(ch_list.items(), key=lambda v: int(v[1]['chan'])):
 #		print k,"=",v['prog'] 
 		for p in v['prog']:
 #			if v['prog'][p]['vname'] == "0":
 #				v['prog'][p]['vname'] = "0 ";
+#			print v['prog'][p]
 
 			line = [ "{0}-{1}".format( v['chan'],p) ]
 			line.extend( v['prog'][p]['vname'] )
@@ -191,54 +287,153 @@ def chan_map(f):
 			line = ','.join(map(str,line))
 
 			print line
-
-#			print '"ch{0}-{1}","{2}","{3}"'.format(
-#					v['chan'],p, vn[0], vn[1] )
-
+	
 	return
 
+##
+## exec hdhomerun tool w/ command
+##
+def homerun_config_cmd( args ):
+	cmd = "hdhomerun_config " + args
+	fin,fout = os.popen2( cmd )
+	line = fout.readlines()
+#	for line in fout: print ">", line
+	return line
+
+##
+## Perform device discovery
+##
+def hdhr_discover():
+	global DeviceData
+
+	dev = {}
+	read_data()
+
+	print "Performing hdhomerun device detection (max 1 device):"
+
+	line = homerun_config_cmd("discover")
+	print line[0].strip()
+	m = re.match(r".+ (\d+) .+ (\d+\.\d+\.\d+\.\d+)$", line[0])
+	devid = dev['id'] = m.group(1)
+	dev['ip'] = m.group(2)
+
+	line = homerun_config_cmd( "%s get /lineup/location" % devid )
+	print line[0].strip()
+	dev['loc'] = line[0].strip()
+
+	line = homerun_config_cmd( "%s get /sys/copyright" % devid )
+	print line[0].strip()
+#	line = homerun_config_cmd( "%s get /sys/debug" % devid ); print line
+#	line = homerun_config_cmd( "%s get /sys/features" % devid ); print line
+	line = homerun_config_cmd( "%s get /sys/hwmodel" % devid )
+	print line[0].strip()
+	dev['hwmodel'] = line[0].strip()
+
+	line = homerun_config_cmd( "%s get /sys/model" % devid )
+	print line[0].strip()
+	dev['model'] = line[0].strip()
+
+	line = homerun_config_cmd( "%s get /sys/version" % devid )
+	print line[0].strip()
+	dev['hwver'] = line[0].strip()
+
+	# detect number of tuners on device
+	tn = 0
+	while True:
+		line = homerun_config_cmd( "%s get /tuner%d/status" % (devid, tn) )
+		if line[0].startswith('ERROR:'): break
+		tn = tn+1
+
+	print "%d tuners" % tn
+	dev['tuners'] = tn
+
+	DeviceData['dev'] = dev
+
+	write_data()
+
+	return	
+
+##
+##
+def read_data():
+	global DeviceData
+	try:
+		DeviceData = pickle.load(open('hrtool.dat','rb'))
+	except IOError:
+		DeviceData = {}
+	return
+
+##
+##
+def write_data():
+	pickle.dump(DeviceData, open('hrtool.dat','wb'))
+	return
+
+##
+## display usage info
+##
 def usage():
-	print 'Usage: -f <file> -x'
+	print 'Usage: -d -S <tuner> -s <file> -l'
+	print '\t-h, --help : display help message'
+	print '\t-d : perform device discovery'
+#	print '\t-S : scan device <tuner> for available programs'
+	print '\t-s : process scanned results from "scan <tuner>" command'
+	print '\t-l : query Silicon Dust server for regional program linup mapping'
+	print '\t-c : generate channel / program mapping CSV dump'
+	print 
 	return
 
-# Gather our code in a main() function
+##
+## Gather our code in a main() function
+##
 def main():
 	try:
-		opts, args = getopt.getopt(sys.argv[1:], "hf:xc", "help")
+		opts, args = getopt.getopt(sys.argv[1:], "hds:lc", "help")
 	except getopt.GetoptError, err:
 		print str(err)
 		usage()
 		sys.exit(2)
 
-	o_mode = 1
+	o_mode = 0 
 	o_file = None
-	o_xml = False
+	o_lineup = False
+	o_csv = False
 
 	for o, a in opts:
 		if o in ("-h", "--help"):
-			usage()
-			sys.exit()
-		elif o == "-f":
-			o_file = a
-		elif o == "-x":
-			o_xml = True
-		elif o == '-c':
+			mode = 0
+		elif o == '-d':
+			o_mode = 1
+		elif o == '-s':
 			o_mode = 2
+			o_file = a
+		elif o == '-l':
+			o_mode = 4
+			o_lineup = True
+		elif o == '-c':
+			o_mode = 8
+			o_csv = True
 
-
-
-	if o_file == "-":
-		o_file = sys.stdin
-	else:
-		o_file = open(o_file, 'r')
+	if o_mode == 0:
+		usage()
+		sys.exit()
 
 	if o_mode == 1:
-		scan_file( o_file, o_xml )
-	else:
-		chan_map( o_file )
+		hdhr_discover()
+	elif o_mode == 2:
+		extract_scanned_programs( o_file )
 
-# Standard boilerplate to call the main() function to begin
-# the program.
+	if o_lineup is True:
+		program_lineup_mapping()
+
+	if o_csv is True:
+		dump_mapping_csv()
+	
+
+# -- END --
+
+## Standard boilerplate to call the main() function to begin
+## the program.
 if __name__ == '__main__':
 	main()
 
